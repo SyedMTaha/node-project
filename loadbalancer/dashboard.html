@@ -1,0 +1,173 @@
+<!-- the dashboard page -->
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Load Balancer Dashboard</title>
+<style>
+  :root { --bg:#0f1115; --fg:#e8e8e8; --card:#1b1e24; --track:#3a3d43; --ok:#2e9e5b; --warn:#e0a100; --over:#d64545; --down:#9aa0aa; --line:#5a5f69; --dot:#3b82f6; }
+  :root[data-theme="light"] { --card: #ffffff; --track: #dde0e5; --line: #b0b6bf; --down: #6b7280; } /* light theme, set by the nav toggle */
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 24px; }
+  h2 { margin: 0 0 4px; text-align: center; }
+  .meta { color: var(--down); font-size: 14px; text-align: center; margin-bottom: 24px; }
+  #stage { position: relative; max-width: 1000px; margin: 0 auto; }
+  #parent { width: 280px; margin: 0 auto 90px; text-align: center; background: var(--card); border: 2px solid var(--dot); border-radius: 10px; padding: 14px; transition: box-shadow .15s; }
+  #parent .t { font-weight: 600; font-size: 18px; }
+  #parent .s { font-size: 13px; color: var(--down); margin-top: 4px; }
+  #kids { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border-radius: 10px; padding: 16px; transition: box-shadow .15s; }
+  .flash { box-shadow: 0 0 0 3px var(--dot); }
+  .row { display: flex; justify-content: space-between; align-items: baseline; }
+  .port { font-weight: 600; font-size: 18px; }
+  .state { font-size: 13px; }
+  .track { background: var(--track); height: 18px; border-radius: 9px; overflow: hidden; margin: 12px 0 8px; }
+  .fill { height: 100%; width: 0; transition: width .4s, background .4s; }
+  .small { font-size: 12px; color: var(--down); margin-top: 6px; }
+  #wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  #wires path { fill: none; stroke: var(--line); stroke-width: 2; }
+  .dot { position: absolute; left: 0; top: 0; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--dot); pointer-events: none; }
+  .dot.sock { background: #a855f7; }
+  .legend { text-align: center; font-size: 12px; color: var(--down); margin-top: 24px; }
+</style>
+</head>
+<body>
+  <!-- NAV + THEME (same snippet on every page; only the links and the active item differ) -->
+  <nav class="topnav">
+    <a href="/">Home</a><a href="/index.html">Chat</a><a class="active" href="/dashboard.html">Dashboard</a><a href="/demo.html">Messaging</a><button type="button" class="theme-btn" onclick="toggleTheme()" title="Switch light / dark">&#9680; Theme</button>
+  </nav>
+  <script>
+    // light / dark theme: remembered in this browser (all pages are on localhost:3000, so they share it)
+    try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+    function toggleTheme() {
+      const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem('theme', t); } catch { /* storage blocked: theme resets on reload */ }
+    }
+  </script>
+  <style>
+    /* shared theme: dark by default, light when <html data-theme="light">; same width and controls on every page */
+    :root { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --panel: #1b1e24; --border: #2c3038; --muted: #9aa0aa; --nav: #16181d; --field: #3a3f48; --accent: #3b82f6; }
+    :root[data-theme="light"] { color-scheme: light; --bg: #f5f6f8; --fg: #1f2328; --panel: #ffffff; --border: #d8dce2; --muted: #5f6670; --nav: #ffffff; --field: #c6ccd4; }
+    body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+    input, button { font: 15px system-ui, sans-serif; background: var(--panel); color: var(--fg); border: 1px solid var(--field); border-radius: 6px; padding: 7px 12px; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    input::placeholder { color: var(--muted); }
+    .topnav { display: flex; flex-wrap: wrap; gap: 4px; background: var(--nav); border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-bottom: 20px; font: 600 17px system-ui, sans-serif; }
+    .topnav a { color: var(--fg); text-decoration: none; padding: 8px 16px; border-radius: 7px; }
+    .topnav a:hover { background: var(--border); }
+    .topnav a.active { background: var(--accent); color: #fff; }
+    .topnav .theme-btn { margin-left: auto; font-weight: 600; }
+  </style>
+
+  <h2>Socket server instances</h2>
+  <div class="meta">Algorithm: <b id="algo">-</b> &middot; <span id="updated">waiting...</span></div>
+  <div id="stage">
+    <svg id="wires"></svg>
+    <div id="parent">
+      <div class="t">Main parent (load balancer)</div>
+      <div class="s">port 3000 &middot; routed: <b id="routed">0</b></div>
+    </div>
+    <div id="kids"></div>
+  </div>
+  <div class="legend">Blue dot = HTTP request &middot; Purple dot = socket connection</div>
+
+<script src="/session-watch.js"></script>
+<script>
+  const stage = document.getElementById('stage');
+  const parent = document.getElementById('parent');
+  const kids = document.getElementById('kids');
+  const wires = document.getElementById('wires');
+  let cards = {}, order = [], routed = 0, live = 0;
+
+  function color(i) {
+    if (!i.healthy) return 'var(--down)';
+    if (i.capacity && i.connections > i.capacity) return 'var(--over)';
+    if (i.capacity && i.connections >= i.capacity * 0.7) return 'var(--warn)';
+    return 'var(--ok)';
+  }
+
+  function pt(el, edge) {
+    const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+    return { x: r.left - s.left + r.width / 2, y: (edge === 'bottom' ? r.bottom : r.top) - s.top };
+  }
+  function pathFor(port) {
+    const a = pt(parent, 'bottom'), b = pt(cards[port].el, 'top'), m = (a.y + b.y) / 2;
+    return `M ${a.x} ${a.y} L ${a.x} ${m} L ${b.x} ${m} L ${b.x} ${b.y}`;
+  }
+  function drawWires() {
+    wires.innerHTML = order.map((p) => `<path d="${pathFor(p)}"/>`).join('');
+  }
+
+  function build(instances) {
+    const ports = instances.map((i) => i.port);
+    if (ports.join() === order.join()) return;
+    kids.innerHTML = ''; cards = {}; order = ports;
+    instances.forEach((i) => {
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.innerHTML =
+        '<div class="row"><span class="port">Port ' + i.port + '</span><span class="state"></span></div>' +
+        '<div class="track"><div class="fill"></div></div>' +
+        '<div class="nums"></div><div class="small"></div>';
+      kids.appendChild(el);
+      cards[i.port] = { el };
+    });
+    drawWires();
+  }
+
+  function update(status) {
+    document.getElementById('algo').textContent = status.algorithm;
+    build(status.instances);
+    status.instances.forEach((i) => {
+      const el = cards[i.port].el, c = color(i);
+      const pct = i.capacity ? Math.min(100, Math.round((i.connections / i.capacity) * 100)) : 0;
+      const st = el.querySelector('.state');
+      st.textContent = i.healthy ? 'healthy' : 'DOWN';
+      st.style.color = c;
+      const f = el.querySelector('.fill');
+      f.style.width = pct + '%'; f.style.background = c;
+      el.querySelector('.nums').innerHTML = '<b>' + i.connections + '</b> / ' + i.capacity + ' connections';
+      el.querySelector('.small').textContent = 'in flight: ' + i.active + ' \u00b7 requests served: ' + i.served +
+        (i.heartbeatAgoMs !== undefined ? ' \u00b7 heartbeat ' + (i.heartbeatAgoMs / 1000).toFixed(1) + 's ago' : '');
+    });
+  }
+
+  function fire(ev) {
+    const c = cards[ev.port];
+    routed++;
+    document.getElementById('routed').textContent = routed;
+    if (!c || live >= 40) return; // cap animations during heavy load
+    live++;
+    const d = document.createElement('div');
+    d.className = 'dot' + (ev.type === 'socket' ? ' sock' : '');
+    d.style.offsetPath = 'path("' + pathFor(ev.port) + '")';
+    stage.appendChild(d);
+    parent.classList.add('flash');
+    const a = d.animate([{ offsetDistance: '0%' }, { offsetDistance: '100%' }], { duration: 700, easing: 'ease-in-out' });
+    a.onfinish = () => {
+      d.remove(); live--;
+      parent.classList.remove('flash');
+      c.el.classList.add('flash');
+      setTimeout(() => c.el.classList.remove('flash'), 150);
+    };
+  }
+
+  async function refresh() {
+    try {
+      update(await (await fetch('/__lb/status')).json());
+      document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      document.getElementById('updated').textContent = 'balancer not reachable';
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 1000);
+  window.addEventListener('resize', drawWires);
+  const es = new EventSource('/__lb/events');
+  es.onmessage = (e) => fire(JSON.parse(e.data));
+</script>
+</body>
+</html>

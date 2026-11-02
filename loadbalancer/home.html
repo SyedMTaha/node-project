@@ -1,0 +1,109 @@
+<!-- home landing page main -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat System Demo</title>
+<style>
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 34px; margin: 28px 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 18px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+  .card { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; color: inherit; text-decoration: none; transition: border-color .15s, transform .15s; }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card h2 { margin: 0 0 10px; font-size: 22px; line-height: 1.3; min-height: 2.6em; display: flex; align-items: flex-start; gap: 10px; } /* room for 2 lines, so the text below lines up */
+  .card p { margin: 0 0 16px; color: var(--muted); font-size: 17px; line-height: 1.45; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; background: #666; flex: none; margin-top: 0.4em; } /* centred on the first heading line */
+  .dot.up { background: #2e9e5b; box-shadow: 0 0 8px #2e9e5b; }
+  .dot.down { background: #d64545; }
+  .state { font-size: 15px; color: var(--muted); margin-top: auto; } /* pinned to the bottom of every card */
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- NAV + THEME (same snippet on every page; only the links and the active item differ) -->
+  <nav class="topnav">
+    <a class="active" href="/">Home</a><a href="/index.html">Chat</a><a href="/dashboard.html">Dashboard</a><a href="/demo.html">Messaging</a><button type="button" class="theme-btn" onclick="toggleTheme()" title="Switch light / dark">&#9680; Theme</button>
+  </nav>
+  <script>
+    // light / dark theme: remembered in this browser (all pages are on localhost:3000, so they share it)
+    try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+    function toggleTheme() {
+      const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem('theme', t); } catch { /* storage blocked: theme resets on reload */ }
+    }
+  </script>
+  <style>
+    /* shared theme: dark by default, light when <html data-theme="light">; same width and controls on every page */
+    :root { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --panel: #1b1e24; --border: #2c3038; --muted: #9aa0aa; --nav: #16181d; --field: #3a3f48; --accent: #3b82f6; }
+    :root[data-theme="light"] { color-scheme: light; --bg: #f5f6f8; --fg: #1f2328; --panel: #ffffff; --border: #d8dce2; --muted: #5f6670; --nav: #ffffff; --field: #c6ccd4; }
+    body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+    input, button { font: 15px system-ui, sans-serif; background: var(--panel); color: var(--fg); border: 1px solid var(--field); border-radius: 6px; padding: 7px 12px; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    input::placeholder { color: var(--muted); }
+    .topnav { display: flex; flex-wrap: wrap; gap: 4px; background: var(--nav); border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-bottom: 20px; font: 600 17px system-ui, sans-serif; }
+    .topnav a { color: var(--fg); text-decoration: none; padding: 8px 16px; border-radius: 7px; }
+    .topnav a:hover { background: var(--border); }
+    .topnav a.active { background: var(--accent); color: #fff; }
+    .topnav .theme-btn { margin-left: auto; font-weight: 600; }
+  </style>
+
+  <h1>Real-time Chat System</h1>
+  <p class="sub">Load balancer, socket gateway, MySQL and Redis, running locally.</p>
+
+  <div class="cards">
+    <a class="card" id="chat" href="/index.html">
+      <h2><span class="dot"></span>Login and Chat</h2>
+      <p>Register or log in, then chat in real time over Socket.IO through the load balancer.</p>
+      <span class="state">checking...</span>
+    </a>
+    <a class="card" id="dash" href="/dashboard.html">
+      <h2><span class="dot"></span>Load Balancer Dashboard</h2>
+      <p>Live view of the instances: health, connections, requests and UDP heartbeats.</p>
+      <span class="state">checking...</span>
+    </a>
+    <a class="card" id="cache" href="/demo.html">
+      <h2><span class="dot"></span>Messaging Demo</h2>
+      <p>Direct 1-to-1 messages by Xid (online, held in Redis, stored in MySQL) and the MySQL + Redis cache demo, through the socket gateway.</p>
+      <span class="state">checking...</span>
+    </a>
+  </div>
+</div>
+
+<script src="/session-watch.js"></script>
+<script>
+  function set(id, up, text) {
+    const card = document.getElementById(id);
+    card.querySelector('.dot').className = 'dot ' + (up ? 'up' : 'down');
+    card.querySelector('.state').textContent = text;
+  }
+
+  async function poll() {
+    let s = null;
+    try {
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 2500);
+      s = await (await fetch('/__lb/demo-status', { cache: 'no-store', signal: ctrl.signal })).json();
+    } catch { /* balancer not reachable */ }
+
+    if (!s) {
+      ['chat', 'dash', 'cache'].forEach((id) => set(id, false, 'balancer not reachable'));
+      return;
+    }
+    const b = s.balancer, gw = s.gateway;
+    set('chat', b.instancesUp > 0, b.instancesUp + '/' + b.instancesTotal + ' instances up');
+    set('dash', true, 'balancer up · ' + b.algorithm);
+    const msgReady = gw.services.some((x) => x.name === 'message');
+    set('cache', gw.up && msgReady,
+      !gw.up ? 'gateway not reachable' : msgReady ? 'gateway up · message service ready' : 'gateway up · message service not connected');
+  }
+
+  poll();
+  setInterval(poll, 3000);
+</script>
+</body>
+</html>

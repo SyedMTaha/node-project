@@ -1,0 +1,175 @@
+<!-- loading Socket.io frontend page -->
+
+<!DOCTYPE html>
+<html>
+<body>
+  <!-- NAV + THEME (same snippet on every page; only the links and the active item differ) -->
+  <nav class="topnav">
+    <a href="/">Home</a><a class="active" href="/index.html">Chat</a><a href="/dashboard.html">Dashboard</a><a href="/demo.html">Messaging</a><button type="button" class="theme-btn" onclick="toggleTheme()" title="Switch light / dark">&#9680; Theme</button>
+  </nav>
+  <script>
+    // light / dark theme: remembered in this browser (all pages are on localhost:3000, so they share it)
+    try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+    function toggleTheme() {
+      const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem('theme', t); } catch { /* storage blocked: theme resets on reload */ }
+    }
+  </script>
+  <style>
+    /* shared theme: dark by default, light when <html data-theme="light">; same width and controls on every page */
+    :root { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --panel: #1b1e24; --border: #2c3038; --muted: #9aa0aa; --nav: #16181d; --field: #3a3f48; --accent: #3b82f6; }
+    :root[data-theme="light"] { color-scheme: light; --bg: #f5f6f8; --fg: #1f2328; --panel: #ffffff; --border: #d8dce2; --muted: #5f6670; --nav: #ffffff; --field: #c6ccd4; }
+    body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+    input, button { font: 15px system-ui, sans-serif; background: var(--panel); color: var(--fg); border: 1px solid var(--field); border-radius: 6px; padding: 7px 12px; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    input::placeholder { color: var(--muted); }
+    .topnav { display: flex; flex-wrap: wrap; gap: 4px; background: var(--nav); border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-bottom: 20px; font: 600 17px system-ui, sans-serif; }
+    .topnav a { color: var(--fg); text-decoration: none; padding: 8px 16px; border-radius: 7px; }
+    .topnav a:hover { background: var(--border); }
+    .topnav a.active { background: var(--accent); color: #fff; }
+    .topnav .theme-btn { margin-left: auto; font-weight: 600; }
+  </style>
+
+  <!-- Socket.IO chat page -->
+  <h3>Public room chat <span style="font-weight:400;color:var(--muted)">(broadcast, per instance)</span></h3>
+  <p style="color:var(--muted);font-size:14px">The original chat: everyone connected to the same server instance sees these messages (they live in that instance's memory). Direct 1-to-1 messages are on the <a href="/demo.html" style="color:var(--accent)">Messaging</a> page.</p>
+  <p>Logged in as <b id="me"></b> <button onclick="logout()">Logout</button></p>
+  <p>User XID: <b id="uid"></b></p>
+  <p>Status: <span id="status">connecting...</span></p>
+  <p>Server instance: <b id="inst">-</b></p>
+  <p id="queueinfo" style="color:#b36b00"></p>
+  <p>Online: <span id="online">-</span></p>
+  <p id="typing" style="height:1em;color:gray"></p>
+  <input id="msg" placeholder="Type a message" />
+  <button onclick="send()">Send</button>
+  <ul id="log"></ul>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/session-watch.js"></script>
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) location.href = '/index.html'; // not logged in: go to the login page
+
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    document.getElementById('me').textContent = payload.username;
+
+    const messages = new Map();
+    const log = document.getElementById('log');
+    let typingTimer;
+
+    function render() {
+      log.innerHTML = '';
+      [...messages.values()].sort((a, b) => a.id - b.id).forEach((m) => {
+        const li = document.createElement('li');
+        li.textContent = m.username + ': ' + m.text + ' ';
+        if (m.username === payload.username) {          // delete button only on my own messages
+          const btn = document.createElement('button');
+          btn.textContent = 'delete';
+          btn.onclick = () => deleteMessage(m.id);
+          li.appendChild(btn);
+        }
+        log.appendChild(li);
+      });
+    }
+
+    async function resync() {
+      const res = await fetch('/api/messages', { headers: { Authorization: 'Bearer ' + token } });
+      if (res.status === 401) return logout();
+      const list = await res.json();
+      messages.clear();
+      list.forEach((m) => messages.set(m.id, m));
+      render();
+    }
+
+    async function deleteMessage(id) {
+      const res = await fetch('/api/messages/' + id, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      if (res.status === 401) return logout();
+      if (res.status === 403) alert('You can only delete your own messages');
+      if (res.status === 404) alert('Message not found (it may live on another instance)');
+      // On success the server broadcasts "deleted", and the handler below updates the screen
+    }
+
+    function logout() {
+      socket.disconnect();                 // close the connection first
+      fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, keepalive: true }).catch(() => {});
+      localStorage.removeItem('token');
+      location.href = '/index.html';
+    }
+
+    // The token goes in the handshake; Socket.IO reconnects automatically
+    const socket = io({ auth: { token }, transports: ['websocket'] });
+
+    let waitStart, waitPoll;
+    function stopWaitWatch() {
+      clearTimeout(waitStart); clearInterval(waitPoll);
+      document.getElementById('queueinfo').textContent = '';
+    }
+    function startWaitWatch() {
+      stopWaitWatch();
+      waitStart = setTimeout(() => {
+        const show = async () => {
+          let msg = 'Still connecting...';
+          try {
+            const s = await (await fetch('/__lb/status')).json();
+            if (s.queue && s.queue.waiting > 0) msg = 'All servers are full. Waiting for a free slot (' + s.queue.waiting + ' in queue)...';
+          } catch { /* status not reachable */ }
+          document.getElementById('queueinfo').textContent = msg;
+        };
+        show();
+        waitPoll = setInterval(show, 1000);
+      }, 1500);
+    }
+    startWaitWatch();
+    socket.on('server_info', ({ instance }) => { document.getElementById('inst').textContent = instance; });
+
+    
+    socket.on('connect', () => {
+      stopWaitWatch(); // connected: hide "Still connecting..." and stop polling the balancer
+      document.getElementById('status').textContent = 'Connected (' + socket.id + ')';
+      document.getElementById('uid').textContent = payload.id; // shows the user ID
+      resync(); // fires again after every reconnect, so we always re-sync
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('status').textContent = 'Disconnected, retrying...';
+      startWaitWatch(); // show the waiting message again if reconnecting takes long
+    });
+    socket.on('connect_error', (err) => {
+      if (err.message === 'Session ended') return window.sessionEnded('ended', token); // task 1.4: old session refused
+      if (err.message === 'Unauthorized') return logout();
+      document.getElementById('status').textContent = 'Error: ' + err.message;
+    });
+    socket.on('auth_expired', logout);
+    socket.on('session:ended', ({ reason }) => window.sessionEnded(reason, token)); // task 1.4: instance refused a send
+
+    socket.on('message', (m) => { messages.set(m.id, m); render(); });
+    socket.on('deleted', ({ id }) => { messages.delete(id); render(); });
+    socket.on('presence', ({ users }) => {
+      document.getElementById('online').textContent = users.join(', ');
+    });
+    socket.on('typing', (name) => {
+      const el = document.getElementById('typing');
+      el.textContent = name + ' is typing...';
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => (el.textContent = ''), 1500);
+    });
+
+    function send() {
+      const input = document.getElementById('msg');
+      const text = input.value.trim();
+      if (!text) return;
+      socket.emit('send', { text });
+      input.value = '';
+    }
+
+    document.getElementById('msg').addEventListener('input', () => socket.emit('typing'));
+    document.getElementById('msg').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send();
+    });
+  </script>
+</body>
+</html>

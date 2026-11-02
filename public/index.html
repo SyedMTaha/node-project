@@ -1,0 +1,249 @@
+<!-- chat page -->
+
+<!DOCTYPE html>
+<html>
+<body>
+  <!-- NAV + THEME (same snippet on every page; only the links and the active item differ) -->
+  <nav class="topnav">
+    <a href="/">Home</a><a class="active" href="/index.html">Chat</a><a href="/dashboard.html">Dashboard</a><a href="/demo.html">Messaging</a><button type="button" class="theme-btn" onclick="toggleTheme()" title="Switch light / dark">&#9680; Theme</button>
+  </nav>
+  <script>
+    // light / dark theme: remembered in this browser (all pages are on localhost:3000, so they share it)
+    try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+    function toggleTheme() {
+      const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem('theme', t); } catch { /* storage blocked: theme resets on reload */ }
+    }
+  </script>
+  <style>
+    /* shared theme: dark by default, light when <html data-theme="light">; same width and controls on every page */
+    :root { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --panel: #1b1e24; --border: #2c3038; --muted: #9aa0aa; --nav: #16181d; --field: #3a3f48; --accent: #3b82f6; }
+    :root[data-theme="light"] { color-scheme: light; --bg: #f5f6f8; --fg: #1f2328; --panel: #ffffff; --border: #d8dce2; --muted: #5f6670; --nav: #ffffff; --field: #c6ccd4; }
+    body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+    input, button { font: 15px system-ui, sans-serif; background: var(--panel); color: var(--fg); border: 1px solid var(--field); border-radius: 6px; padding: 7px 12px; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    input::placeholder { color: var(--muted); }
+    .topnav { display: flex; flex-wrap: wrap; gap: 4px; background: var(--nav); border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-bottom: 20px; font: 600 17px system-ui, sans-serif; }
+    .topnav a { color: var(--fg); text-decoration: none; padding: 8px 16px; border-radius: 7px; }
+    .topnav a:hover { background: var(--border); }
+    .topnav a.active { background: var(--accent); color: #fff; }
+    .topnav .theme-btn { margin-left: auto; font-weight: 600; }
+  </style>
+
+  <!-- Login section -->
+  <div id="auth">
+    <h3>Login or Register</h3>
+    <p id="ended" role="status" style="display:none; padding:8px 12px; border-radius:6px; background:#fde2e2; color:#7f1d1d;"></p>
+    <input id="username" placeholder="Username" />
+
+    <span style="position:relative; display:inline-block;">
+    <input id="password" type="password" placeholder="Password" style="padding-right:32px;" />
+    <button type="button" id="togglePw" onclick="togglePassword()" aria-label="Show password"
+    style="position:absolute; right:2px; top:50%; transform:translateY(-50%); border:none; background:none; cursor:pointer; font-size:16px; padding:0 6px;">👁</button>
+    </span>
+    
+
+    <button onclick="login()">Login</button>
+    <button onclick="register()">Register</button>
+  </div>
+
+  <!-- OLD raw WebSocket chat (the /ws endpoint is commented out in server.js); the chat now lives in socketio.html
+  <div id="chat" style="display:none">
+    <p>Logged in as <b id="me"></b> <button onclick="logout()">Logout</button></p>
+    <button type="button" onclick="location.href='/socketio.html'">Open Socket.IO chat</button>
+    <p>Status: <span id="status">-</span></p>
+    <p>User ID: <b id="uid"></b></p>
+    <p>Online: <span id="online">-</span></p>
+    <input id="msg" placeholder="Type a message" />
+    <button onclick="send()">Send</button>
+    <ul id="log"></ul>
+    <p>Sync: <span id="syncStatus">-</span></p>
+  </div>
+  -->
+
+  <script>window.SESSION_WATCH_SELF = true;</script><!-- toast only: no session watcher on the login page -->
+  <script src="/session-watch.js"></script>
+  <script>
+    let token = localStorage.getItem('token');
+    /* OLD raw WebSocket client state (not used since the move to Socket.IO)
+    let ws;
+    let currentUser = null;
+    let reconnectTimer;
+    let reconnectDelay = 1000;
+
+    // The client's copy of the server's data (id -> message)
+    const messages = new Map();
+    const log = document.getElementById('log');
+    */
+
+    function togglePassword() {
+    const input = document.getElementById('password');
+    const btn = document.getElementById('togglePw');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';          // switch between hidden and visible
+    btn.textContent = show ? '👁 ' : '👁';
+    btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  }
+
+    /* OLD raw WebSocket client: api(), render(), resync(), checkSync() (not used since the move to Socket.IO)
+    // ---------- API helper: attaches the Authorization header ----------
+    async function api(path, options = {}) {
+      const res = await fetch('/api' + path, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + token,
+          ...(options.headers || {}),
+        },
+      });
+      if (res.status === 401) {
+        logout(); // invalid or expired token: back to the login screen
+        throw new Error('Session expired');
+      }
+      return res;
+    }
+
+    // ---------- Render the mirror to the screen ----------
+    function render() {
+      log.innerHTML = '';
+      [...messages.values()]
+        .sort((a, b) => a.id - b.id)
+        .forEach((msg) => {
+          const li = document.createElement('li');
+          li.textContent = msg.username + ': ' + msg.text + ' ';
+          if (msg.username === currentUser) {
+            const btn = document.createElement('button');
+            btn.textContent = 'delete';
+            btn.onclick = () => api('/messages/' + msg.id, { method: 'DELETE' });
+            li.appendChild(btn);
+          }
+          log.appendChild(li);
+        });
+    }
+
+    // ---------- Sync: replace the local copy with the server's data ----------
+    async function resync() {
+      const res = await api('/messages');
+      const list = await res.json();
+      messages.clear();
+      list.forEach((m) => messages.set(m.id, m));
+      render();
+    }
+
+    async function checkSync() {
+    const res = await api('/messages');
+    const serverIds = (await res.json()).map((m) => m.id).sort((a, b) => a - b).join(',');
+    const clientIds = [...messages.keys()].sort((a, b) => a - b).join(',');
+    const ok = serverIds === clientIds;
+    document.getElementById('syncStatus').textContent = ok ? 'In sync' : 'Out of sync, resyncing...';
+    if (!ok) await resync();
+    return ok;
+    }
+
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) checkSync().catch(console.error);
+}, 10000);
+    */
+
+    // ---------- Auth ----------
+    async function authRequest(path) {
+      const res = await fetch('/api/auth/' + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) return window.toast(data.error); // e.g. "Username already taken", "Invalid username or password"
+      token = data.token;
+      try { localStorage.setItem('token', token); } catch { /* storage blocked: the chat page will ask to log in again */ }
+      try { if (data.previousDevice) sessionStorage.setItem('previousDevice', JSON.stringify(data.previousDevice)); } catch { /* skip the notice */ }
+      location.href = '/socketio.html';
+    }
+    const login = () => authRequest('login');
+    const register = () => authRequest('register');
+
+    function logout() {
+      localStorage.removeItem('token');
+      location.reload();
+    }
+
+    /* OLD raw WebSocket client: startChat(), connect(), send() (not used since the move to Socket.IO)
+    // ---------- Start: ask the server if the saved token is still valid ----------
+    async function startChat() {
+      const res = await api('/auth/me');
+      const { user } = await res.json();
+      currentUser = user.username;
+      document.getElementById('uid').textContent = user.id;
+
+      document.getElementById('me').textContent = currentUser;
+      document.getElementById('auth').style.display = 'none';
+      document.getElementById('chat').style.display = 'block';
+      connect();
+      
+      function showTokenInfo() {
+      const p = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      console.log('Token payload:', p);
+      console.log('Expires at:', new Date(p.exp * 1000).toLocaleString());
+    }
+    }
+
+    // ---------- WebSocket with auto-reconnect ----------
+    function connect() {
+      ws = new WebSocket('ws://' + location.host + '/ws?token=' + encodeURIComponent(token));
+
+      ws.onopen = () => {
+        reconnectDelay = 1000;
+        document.getElementById('status').textContent = 'Connected';
+        resync(); // catch up on anything missed while offline
+      };
+
+      ws.onmessage = (event) => {
+        const { type, data } = JSON.parse(event.data);
+        if (type === 'message') {
+          messages.set(data.id, data);
+          render();
+        } else if (type === 'deleted') {
+          messages.delete(data.id);
+          render();
+        } else if (type === 'presence') {
+          document.getElementById('online').textContent = data.users.join(', ');
+        }
+      };
+
+      ws.onclose = (event) => {
+        if (event.code === 4401) return logout(); // rejected by the server
+        document.getElementById('status').textContent = 'Disconnected, retrying...';
+        reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+      };
+    }
+
+    function send() {
+      const input = document.getElementById('msg');
+      const text = input.value.trim();
+      if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'message', text }));
+      input.value = '';
+    }
+
+    document.getElementById('msg').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send();
+    });
+    */
+
+    const ended = new URLSearchParams(location.search).get('ended'); // set by session-watch.js after a forced logout
+    if (ended) {
+      const p = document.getElementById('ended');
+      p.textContent = ended === 'new_login' ? 'You were logged out because you logged in on another device.' : 'You were logged out.';
+      p.style.display = 'block';
+    }
+
+    if (token) location.href = '/socketio.html';
+  </script>
+</body>
+</html>

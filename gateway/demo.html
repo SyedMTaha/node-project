@@ -1,0 +1,368 @@
+<!-- message page -->
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Messaging Demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 20px auto; padding: 0 16px; }
+  .row { display: flex; gap: 8px; margin: 8px 0; }
+  .row input { flex: 1; padding: 6px; }
+  ul { list-style: none; padding: 0; }
+  li { border-bottom: 1px solid var(--border); padding: 6px 0; display: flex; gap: 8px; align-items: center; }
+  li .text { flex: 1; word-break: break-word; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; color: #fff; white-space: nowrap; }
+  .cache { background: #c0392b; } /* Redis */
+  .db { background: #2471a3; }    /* MySQL */
+  .direct { background: #2e9e5b; } /* delivered straight to an online user */
+  .pending { background: #c27c0e; } /* held in Redis until the recipient comes online */
+  .err { background: #777; }
+  .delivered { background: #0f8a8a; } /* a held message reached the recipient */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 4px 20px 12px; margin: 20px 0; }
+  .panel h2 small { color: var(--muted); font-weight: 400; font-size: 15px; margin-left: 8px; }
+  .hint { color: var(--muted); font-size: 14px; }
+  .chip { padding: 3px 12px; border-radius: 999px; margin: 0 6px 6px 0; font-size: 14px; }
+  .alias-editor { display: flex; gap: 6px; align-items: center; }
+  #status { font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<!-- NAV + THEME (same snippet on every page; only the links and the active item differ) -->
+<nav class="topnav">
+  <a href="/">Home</a><a href="/index.html">Chat</a><a href="/dashboard.html">Dashboard</a><a class="active" href="/demo.html">Messaging</a><button type="button" class="theme-btn" onclick="toggleTheme()" title="Switch light / dark">&#9680; Theme</button>
+</nav>
+<script>
+  // light / dark theme: remembered in this browser (all pages are on localhost:3000, so they share it)
+  try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }
+  function toggleTheme() {
+    const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = t;
+    try { localStorage.setItem('theme', t); } catch { /* storage blocked: theme resets on reload */ }
+  }
+</script>
+<style>
+  /* shared theme: dark by default, light when <html data-theme="light">; same width and controls on every page */
+  :root { color-scheme: dark; --bg: #0f1115; --fg: #e8e8e8; --panel: #1b1e24; --border: #2c3038; --muted: #9aa0aa; --nav: #16181d; --field: #3a3f48; --accent: #3b82f6; }
+  :root[data-theme="light"] { color-scheme: light; --bg: #f5f6f8; --fg: #1f2328; --panel: #ffffff; --border: #d8dce2; --muted: #5f6670; --nav: #ffffff; --field: #c6ccd4; }
+  body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+  input, button { font: 15px system-ui, sans-serif; background: var(--panel); color: var(--fg); border: 1px solid var(--field); border-radius: 6px; padding: 7px 12px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  input::placeholder { color: var(--muted); }
+  .topnav { display: flex; flex-wrap: wrap; gap: 4px; background: var(--nav); border: 1px solid var(--border); border-radius: 10px; padding: 6px; margin-bottom: 20px; font: 600 17px system-ui, sans-serif; }
+  .topnav a { color: var(--fg); text-decoration: none; padding: 8px 16px; border-radius: 7px; }
+  .topnav a:hover { background: var(--border); }
+  .topnav a.active { background: var(--accent); color: #fff; }
+  .topnav .theme-btn { margin-left: auto; font-weight: 600; }
+</style>
+
+<h1>Messaging demo</h1>
+
+<div class="row">
+  <span id="who" style="flex:1; align-self:center; color:var(--muted)"></span>
+  <button id="connect">Reconnect</button>
+</div>
+<p id="status">Not connected</p>
+
+<section class="panel">
+  <h2>Direct messages <small>1-to-1 by Xid · online: direct · offline: Redis, after 5 min MySQL</small></h2>
+  <p class="hint">Online now: <span id="onlineList">-</span></p>
+  <div class="row">
+    <input id="dmTo" placeholder="To: 9-digit Xid (or click a name above)" maxlength="9" style="flex: 0 0 300px">
+    <input id="dmText" placeholder="Message" maxlength="500">
+    <button id="dmSend">Send</button>
+  </div>
+  <ul id="inbox"></ul>
+</section>
+
+<section class="panel">
+  <h2>Requests and friends</h2>
+  <p class="hint">Incoming requests need acceptance before the recipient can reply. You can set a private alias after accepting.</p>
+  <ul id="friendships"></ul>
+</section>
+
+<!-- Cache demo is temporarily hidden; its response log remains below.
+<section class="panel">
+  <h2>Cache demo <small>public messages · MySQL + Redis cache</small></h2>
+  <div class="row">
+    <input id="text" placeholder="Message text" maxlength="500">
+    <button id="send">Send</button>
+    <button id="reload">Reload list</button>
+  </div>
+  <h3>Messages</h3>
+  <ul id="messages"></ul>
+  <h3>Responses (newest first)</h3>
+  <ul id="log"></ul>
+</section>
+-->
+
+<section class="panel">
+  <h2>Responses <small>latest requests</small></h2>
+  <ul id="log"></ul>
+</section>
+
+<script>window.SESSION_WATCH_SELF = true;</script>
+<script src="/session-watch.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let socket = null;
+  let me = null;                // my token payload (set in connect)
+  let friendshipRows = [];
+  const sentBadges = new Map(); // uid of a message I sent -> its badge (turns to "Delivered" on a receipt)
+  const DM_LABEL = { direct: 'Direct', pending: 'Held in Redis', db: 'Stored in MySQL', delivered: '✓ Delivered' };
+  const rows = new Map(); // message id -> <li>
+
+  // one request through the gateway; resolves with { ok, data, error, meta }
+  function call(event, data = {}) {
+    if (!socket || !socket.connected) return Promise.resolve({ ok: false, error: 'not connected' });
+    return new Promise((resolve) => socket.emit(event, data, resolve));
+  }
+
+  function badge(r) {
+    const b = document.createElement('span');
+    if (!r.ok) { b.className = 'badge err'; b.textContent = 'error'; }
+    else if (!r.meta) { b.className = 'badge err'; b.textContent = 'no meta'; }
+    else {
+      const src = r.meta.source; // 'cache', 'db' or 'direct'
+      const names = { cache: 'Redis', db: 'MySQL', direct: 'Direct', pending: 'Held in Redis' };
+      b.className = 'badge ' + (names[src] ? src : 'err');
+      b.textContent = (names[src] || src) + ', ' + r.meta.ms + ' ms';
+    }
+    return b;
+  }
+
+  function logResponse(label, r) {
+    const li = document.createElement('li');
+    const t = document.createElement('span');
+    t.className = 'text';
+    t.textContent = label + (r.ok ? '' : ' failed: ' + r.error);
+    li.append(t, badge(r));
+    $('log').prepend(li);
+  }
+
+  // add a message row, or update its text if it is already shown
+  function upsert(m) {
+    let li = rows.get(m.id);
+    if (!li) {
+      li = document.createElement('li');
+      const text = document.createElement('span');
+      text.className = 'text';
+      const get = document.createElement('button');
+      get.textContent = 'Get';
+      get.onclick = async () => logResponse('get #' + m.id, await call('message:get', { id: m.id }));
+      const edit = document.createElement('button');
+      edit.textContent = 'Edit';
+      edit.onclick = async () => {
+        const t = prompt('New text', li.dataset.text);
+        if (!t || !t.trim()) return;
+        logResponse('edit #' + m.id, await call('message:edit', { id: m.id, text: t }));
+      };
+      li.append(text, get, edit);
+      rows.set(m.id, li);
+      $('messages').append(li);
+    }
+    li.dataset.text = m.text;
+    li.querySelector('.text').textContent = '#' + m.id + ' ' + m.username + ': ' + m.text;
+  }
+
+  async function reload() {
+    const r = await call('message:list');
+    logResponse('list', r);
+    if (!r.ok) return;
+    $('messages').textContent = '';
+    rows.clear();
+    r.data.forEach(upsert);
+  }
+
+  // served from localhost:3000 (same origin as the login page), so the login token is shared;
+  // the gateway on 6100 allows this origin through its CORS setting
+  const GATEWAY_URL = 'http://localhost:6100';
+  function readToken() { try { return localStorage.getItem('token'); } catch { return null; } }
+  function tokenUser(t) { // the token payload: { id, xid, username, role, ... }
+    try { return JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch { return null; }
+  }
+
+  function connect() {
+    const token = readToken();
+    const user = token && tokenUser(token);
+    if (!user) {
+      $('who').textContent = 'Not logged in. ';
+      const a = document.createElement('a');
+      a.href = '/index.html'; a.textContent = 'Log in first'; a.style.color = '#6ea8fe';
+      $('who').append(a);
+      return;
+    }
+    me = user;
+    $('who').textContent = 'Logged in as ' + user.username + ' · your Xid: ' + user.xid;
+    if (socket) socket.disconnect();
+    socket = io(GATEWAY_URL, { auth: { token }, reconnection: false });
+    $('status').textContent = 'Connecting...';
+    socket.on('connect', () => { $('status').textContent = 'Connected, socket ' + socket.id; reload(); refreshFriendships(); });
+    socket.on('connect_error', (e) => {
+      if (e.message === 'Session ended') return window.sessionEnded('ended', token); // task 1.4: old session refused
+      $('status').textContent = 'connect_error: ' + e.message;
+    });
+    socket.on('disconnect', (why) => { if (!socket.ended) $('status').textContent = 'Disconnected: ' + why; }); // keep the "logged out" text
+    socket.on('session:ended', ({ reason }) => { // task 1.3: this login was replaced (another device) or logged out
+      socket.ended = true;
+      $('status').textContent = 'Logged out.';
+      window.sessionEnded(reason, token); // shared toast + login page
+    });
+    socket.on('message', upsert);        // broadcast after any send
+    socket.on('message_edited', upsert); // broadcast after any edit
+    socket.on('dm', (m) => showDm(m, false, 'direct')); // a direct message for me
+    socket.on('dm:pending', (list, ack) => { // messages held while I was offline
+      list.forEach((m) => showDm(m, false, m.via === 'db' ? 'db' : 'pending', 'waited ' + Math.round((Date.now() - Date.parse(m.sentAt)) / 1000) + ' s'));
+      if (typeof ack === 'function') ack('received'); // tells the service it may delete them
+    });
+    socket.on('dm:delivered', ({ uids }) => uids.forEach((u) => { // receipt: my held messages arrived
+      const b = sentBadges.get(u);
+      if (b) setDmStatus(b, 'delivered');
+    }));
+    socket.on('friendship:request', () => refreshFriendships());
+    socket.on('friendship:update', () => refreshFriendships());
+    socket.on('presence:list', showOnline); // who is online right now
+  }
+
+  $('connect').onclick = connect;
+  connect(); // connect right away with the login token
+
+  // direct messages: newest first, each line with a status badge
+  function setDmStatus(b, status, note) {
+    b.className = 'badge ' + status;
+    b.textContent = DM_LABEL[status] + (note ? ', ' + note : '');
+  }
+  function showDm(m, mine, status, note) {
+    const li = document.createElement('li');
+    const t = document.createElement('span');
+    t.className = 'text';
+    t.textContent = (mine ? 'to ' + m.to : 'from ' + m.fromName + ' (' + m.from + ')') + ': ' + m.text + '  · chatid_' + String(m.chatId).padStart(2, '0');
+    const b = document.createElement('span');
+    setDmStatus(b, status, note);
+    li.append(t, b);
+    if (mine) sentBadges.set(m.uid, b);
+    $('inbox').prepend(li);
+  }
+  // online users as clickable names (fills the To field); myself is left out
+  function showOnline(list) {
+    const box = $('onlineList');
+    box.textContent = '';
+    const others = list.filter((u) => !me || u.xid !== me.xid);
+    if (!others.length) { box.textContent = 'nobody else'; return; }
+    others.forEach((u) => {
+      const c = document.createElement('button');
+      c.type = 'button'; c.className = 'chip';
+      c.textContent = u.username + ' (' + u.xid + ')';
+      c.onclick = () => { $('dmTo').value = u.xid; $('dmText').focus(); };
+      box.append(c);
+    });
+  }
+
+  async function refreshFriendships() {
+    const r = await call('message:friendships');
+    if (!r.ok) return;
+    friendshipRows = r.data;
+    const box = $('friendships');
+    box.textContent = '';
+    if (!friendshipRows.length) {
+      box.textContent = 'No requests or friends yet.';
+      updateComposerState();
+      return;
+    }
+    friendshipRows.forEach((f) => {
+      const li = document.createElement('li');
+      const label = document.createElement('span');
+      label.className = 'text';
+      const display = f.alias || f.username;
+      label.textContent = display + ' (' + f.xid + ') · ' + f.status +
+        (f.status === 'pending' && f.requester === me.xid ? ' · ' + f.remaining + ' message(s) left' : '');
+      li.append(label);
+      if (f.status === 'pending' && f.requester !== me.xid) {
+        const accept = document.createElement('button');
+        accept.textContent = 'Accept';
+        accept.onclick = () => updateFriendship('accept', f.xid);
+        const decline = document.createElement('button');
+        decline.textContent = 'Decline';
+        decline.onclick = () => updateFriendship('decline', f.xid);
+        li.append(accept, decline);
+      }
+      if (f.status === 'accepted') {
+        const editor = document.createElement('span');
+        editor.className = 'alias-editor';
+        const aliasInput = document.createElement('input');
+        aliasInput.type = 'text';
+        aliasInput.maxLength = 100;
+        aliasInput.placeholder = 'Private alias';
+        aliasInput.value = f.alias || '';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = 'Save alias';
+        save.onclick = async (event) => {
+          event.stopPropagation();
+          const result = await call('message:alias', { xid: f.xid, alias: aliasInput.value });
+          logResponse('alias for ' + f.xid, result);
+          if (result.ok) refreshFriendships();
+        };
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.textContent = 'Clear';
+        clear.onclick = async (event) => {
+          event.stopPropagation();
+          aliasInput.value = '';
+          const result = await call('message:alias', { xid: f.xid, alias: '' });
+          logResponse('alias cleared for ' + f.xid, result);
+          if (result.ok) refreshFriendships();
+        };
+        editor.append(aliasInput, save, clear);
+        li.append(editor);
+      }
+      li.onclick = (event) => {
+        if (event.target.closest('.alias-editor')) return;
+        if (f.status === 'accepted') {
+          $('dmTo').value = f.xid;
+          $('dmText').focus();
+          updateComposerState();
+        }
+      };
+      box.append(li);
+    });
+    updateComposerState();
+  }
+
+  async function updateFriendship(action, xid) {
+    const r = await call('message:' + action, { xid });
+    logResponse(action + ' request ' + xid, r);
+    if (r.ok) refreshFriendships();
+  }
+
+  function updateComposerState() {
+    const to = $('dmTo').value.trim();
+    const f = friendshipRows.find((row) => row.xid === to);
+    const blocked = f && (f.status === 'declined' ||
+      (f.status === 'pending' && (f.requester !== me.xid || f.remaining <= 0)));
+    $('dmText').disabled = !!blocked;
+    $('dmSend').disabled = !!blocked;
+    $('dmText').title = blocked ? 'Accept the request or wait for acceptance before messaging.' : '';
+  }
+  $('dmTo').addEventListener('input', updateComposerState);
+  $('dmSend').onclick = async () => {
+    const to = $('dmTo').value.trim(), text = $('dmText').value.trim();
+    if (!to || !text) return;
+    const r = await call('message:direct', { to, text });
+    logResponse('direct to ' + to, r);
+    if (r.ok) {
+      showDm(r.data, true, (r.meta && r.meta.source) || 'direct');
+      $('dmText').value = '';
+      refreshFriendships();
+    } else {
+      refreshFriendships();
+      updateComposerState();
+    }
+  };
+
+</script>
+</body>
+</html>
