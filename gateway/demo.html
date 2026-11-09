@@ -8,8 +8,15 @@
 <title>Messaging Demo</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 760px; margin: 20px auto; padding: 0 16px; }
-  .row { display: flex; gap: 8px; margin: 8px 0; }
-  .row input { flex: 1; padding: 6px; }
+  .row { display: flex; gap: 8px; margin: 8px 0; align-items: center; flex-wrap: wrap; }
+  .row input { flex: 1; padding: 6px; min-width: 0; }
+  .composer { display: grid; grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1fr) auto auto; gap: 8px; align-items: center; }
+  .media-picker { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--field); border-radius: 8px; color: var(--muted); font-size: 13px; }
+  .media-picker input { max-width: 210px; padding: 0; border: 0; }
+  .media-help { color: var(--muted); font-size: 12px; margin: 0; }
+  .profile-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .profile-preview { display: none; width: 72px; height: 72px; object-fit: cover; border-radius: 50%; border: 2px solid var(--accent); }
+  @media (max-width: 720px) { .composer { grid-template-columns: 1fr; } .composer > * { width: 100%; box-sizing: border-box; } }
   ul { list-style: none; padding: 0; }
   li { border-bottom: 1px solid var(--border); padding: 6px 0; display: flex; gap: 8px; align-items: center; }
   li .text { flex: 1; word-break: break-word; }
@@ -67,13 +74,25 @@
 <p id="status">Not connected</p>
 
 <section class="panel">
+  <h2>Profile picture</h2>
+  <div class="profile-tools">
+    <img id="profilePreview" class="profile-preview" alt="Your profile picture">
+    <label class="media-picker">Choose image <input id="profileImage" type="file" accept="image/png,image/jpeg" title="PNG or JPEG, maximum 5 MiB"></label>
+    <button id="profileUpload">Upload picture</button>
+  </div>
+  <p class="media-help">PNG or JPEG, maximum 5 MiB. Your picture stays stored until replaced.</p>
+</section>
+
+<section class="panel">
   <h2>Direct messages <small>1-to-1 by Xid · online: direct · offline: Redis, after 5 min MySQL</small></h2>
   <p class="hint">Online now: <span id="onlineList">-</span></p>
-  <div class="row">
+  <div class="composer">
     <input id="dmTo" placeholder="To: 9-digit Xid (or click a name above)" maxlength="9" style="flex: 0 0 300px">
     <input id="dmText" placeholder="Message" maxlength="500">
+    <label class="media-picker">Image <input id="dmImage" type="file" accept="image/png,image/jpeg" title="PNG or JPEG, maximum 5 MiB"></label>
     <button id="dmSend">Send</button>
   </div>
+  <p class="media-help">Optional PNG or JPEG image, maximum 5 MiB.</p>
   <ul id="inbox"></ul>
 </section>
 
@@ -114,6 +133,7 @@
   const sentBadges = new Map(); // uid of a message I sent -> its badge (turns to "Delivered" on a receipt)
   const DM_LABEL = { direct: 'Direct', pending: 'Held in Redis', db: 'Stored in MySQL', delivered: '✓ Delivered' };
   const rows = new Map(); // message id -> <li>
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
   // one request through the gateway; resolves with { ok, data, error, meta }
   function call(event, data = {}) {
@@ -200,7 +220,10 @@
     if (socket) socket.disconnect();
     socket = io(GATEWAY_URL, { auth: { token }, reconnection: false });
     $('status').textContent = 'Connecting...';
-    socket.on('connect', () => { $('status').textContent = 'Connected, socket ' + socket.id; reload(); refreshFriendships(); });
+    socket.on('connect', () => {
+      $('status').textContent = 'Connected, socket ' + socket.id;
+      reload(); refreshFriendships(); loadProfilePicture(me.xid);
+    });
     socket.on('connect_error', (e) => {
       if (e.message === 'Session ended') return window.sessionEnded('ended', token); // task 1.4: old session refused
       $('status').textContent = 'connect_error: ' + e.message;
@@ -239,12 +262,57 @@
     const li = document.createElement('li');
     const t = document.createElement('span');
     t.className = 'text';
-    t.textContent = (mine ? 'to ' + m.to : 'from ' + m.fromName + ' (' + m.from + ')') + ': ' + m.text + '  · chatid_' + String(m.chatId).padStart(2, '0');
+    t.textContent = (mine ? 'to ' + m.to : 'from ' + m.fromName + ' (' + m.from + ')') +
+      (m.text ? ': ' + m.text : '') + '  · chatid_' + String(m.chatId).padStart(2, '0');
     const b = document.createElement('span');
     setDmStatus(b, status, note);
     li.append(t, b);
+    if (m.attachment) {
+      const attachment = document.createElement('span');
+      attachment.className = 'text';
+      attachment.textContent = 'image: ' + m.attachment.name + ' (' + m.attachment.sizeBytes + ' bytes)';
+      li.append(attachment);
+      if (!mine) {
+        const download = document.createElement('button');
+        download.type = 'button';
+        download.textContent = 'Download image';
+        download.onclick = () => downloadAttachment(m.attachment, download);
+        li.append(download);
+      }
+    }
     if (mine) sentBadges.set(m.uid, b);
     $('inbox').prepend(li);
+  }
+
+  async function downloadAttachment(media, button) {
+    button.disabled = true;
+    const token = readToken();
+    try {
+      const response = await fetch('/api/media/' + encodeURIComponent(media.mediaId), {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'download failed');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = media.name || 'image';
+      link.click();
+      const image = document.createElement('img');
+      image.src = url;
+      image.alt = media.name;
+      image.style.maxWidth = '240px';
+      image.style.maxHeight = '240px';
+      button.replaceWith(image);
+      const ack = await fetch('/api/media/' + encodeURIComponent(media.mediaId) + '/downloaded', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      if (!ack.ok) throw new Error('download acknowledgement failed');
+    } catch (error) {
+      button.disabled = false;
+      window.toast(error.message);
+    }
   }
   // online users as clickable names (fills the To field); myself is left out
   function showOnline(list) {
@@ -350,17 +418,60 @@
   $('dmTo').addEventListener('input', updateComposerState);
   $('dmSend').onclick = async () => {
     const to = $('dmTo').value.trim(), text = $('dmText').value.trim();
-    if (!to || !text) return;
-    const r = await call('message:direct', { to, text });
+    const image = $('dmImage').files[0];
+    if (!to || (!text && !image)) return;
+    if (image && (!['image/png', 'image/jpeg'].includes(image.type) || image.size > MAX_IMAGE_BYTES)) {
+      return window.toast('Choose a PNG or JPEG image up to 5 MiB.');
+    }
+    let mediaId = null;
+    if (image) {
+      const upload = await fetch('/api/media?to=' + encodeURIComponent(to), {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + readToken(), 'Content-Type': image.type, 'X-File-Name': image.name },
+        body: image,
+      });
+      const uploadData = await upload.json();
+      if (!upload.ok) return window.toast(uploadData.error || 'image upload failed');
+      mediaId = uploadData.mediaId;
+    }
+    const r = await call('message:direct', { to, text, mediaId });
     logResponse('direct to ' + to, r);
     if (r.ok) {
       showDm(r.data, true, (r.meta && r.meta.source) || 'direct');
       $('dmText').value = '';
+      $('dmImage').value = '';
       refreshFriendships();
     } else {
       refreshFriendships();
       updateComposerState();
     }
+  };
+
+  async function loadProfilePicture(xid) {
+    const response = await fetch('/api/media/profile/' + encodeURIComponent(xid), {
+      headers: { Authorization: 'Bearer ' + readToken() },
+    });
+    if (!response.ok) return;
+    const image = $('profilePreview');
+    image.src = URL.createObjectURL(await response.blob());
+    image.style.display = 'block';
+  }
+
+  $('profileUpload').onclick = async () => {
+    const image = $('profileImage').files[0];
+    if (!image) return window.toast('Choose a profile picture first.');
+    if (!['image/png', 'image/jpeg'].includes(image.type) || image.size > MAX_IMAGE_BYTES) {
+      return window.toast('Choose a PNG or JPEG image up to 5 MiB.');
+    }
+    const response = await fetch('/api/media/profile', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + readToken(), 'Content-Type': image.type, 'X-File-Name': image.name },
+      body: image,
+    });
+    const data = await response.json();
+    if (!response.ok) return window.toast(data.error || 'profile picture upload failed');
+    $('profileImage').value = '';
+    loadProfilePicture(me.xid);
   };
 
 </script>

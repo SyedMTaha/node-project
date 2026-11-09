@@ -160,8 +160,10 @@ async function saveToDb(msgs) {
 // messages for one user that waited > PENDING_MAX_S (stored in MySQL), oldest first; uses index idx_dm_for
 const DB_PENDING_SQL =
   'SELECT d.id, d.msg_uid AS uid, d.chat_id AS chatId, d.sender_xid AS `from`, u.username AS fromName, ' +
-  'd.is_message_for AS `to`, d.text, d.sent_at AS sentAt ' +
+  'd.is_message_for AS `to`, d.text, d.sent_at AS sentAt, mm.media_id AS mediaId, ' +
+  'mm.original_name AS mediaName, mm.mime_type AS mediaMimeType, mm.size_bytes AS mediaSize ' +
   'FROM direct_messages d JOIN users u ON u.user_xid = d.sender_xid ' +
+  'LEFT JOIN message_media mm ON mm.message_uid = d.msg_uid ' +
   'WHERE d.is_message_for = ? AND d.is_delivered = 0 ORDER BY d.sent_at LIMIT 500'; // index idx_dm_open
 
 // delete queue: rows flagged is_delivered = 1 are deleted in batches (one DELETE for up to DELETE_BATCH rows
@@ -207,7 +209,12 @@ async function deliverPending(xid) {
     const items = await redis.zrange(pendingKey(xid), 0, -1).catch(() => []); // newer: still in Redis (Redis down: MySQL now, Redis on "ready")
     if (!rows.length && !items.length) return;
     const msgs = [
-      ...rows.map((r) => ({ ...r, sentAt: new Date(r.sentAt).toISOString(), via: 'db' })),
+      ...rows.map((r) => ({
+        ...r,
+        sentAt: new Date(r.sentAt).toISOString(),
+        attachment: r.mediaId ? { mediaId: r.mediaId, name: r.mediaName, mimeType: r.mediaMimeType, sizeBytes: r.mediaSize } : null,
+        via: 'db',
+      })),
       ...items.map((s) => ({ ...JSON.parse(s), via: 'redis' })),
     ];
     if (!(await push(xid, 'dm:pending', msgs))) {
@@ -338,10 +345,22 @@ socket.on('call', async ({ action, data, user }, reply) => {
     if (action === 'direct') {
       const text = cleanText(data);
       const to = String((data && data.to) || '');
-      if (!text || !/^\d{9}$/.test(to)) return reply({ ok: false, error: 'need "to" (9-digit xid) and text' });
+      const mediaId = data && typeof data.mediaId === 'string' ? data.mediaId : null;
+      if ((!text && !mediaId) || !/^\d{9}$/.test(to)) return reply({ ok: false, error: 'need "to" (9-digit xid) and text or image' });
       if (to === user.xid) return reply({ ok: false, error: 'you cannot send a message to yourself' });
       const chat = await getChat(user.xid, to);
       if (!chat) return reply({ ok: false, error: `no user with xid ${to}` });
+      let attachment = null;
+      if (mediaId) {
+        const [[media]] = await db.execute(
+          `SELECT media_id AS mediaId, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes
+             FROM message_media
+            WHERE media_id = ? AND sender_xid = ? AND recipient_xid = ? AND downloaded_at IS NULL`,
+          [mediaId, user.xid, to]
+        );
+        if (!media) return reply({ ok: false, error: 'image upload not found or already used' });
+        attachment = media;
+      }
       let friendship = await getFriendship(user.xid, to);
       if (!friendship) {
         friendship = await createFriendship(user.xid, to);
@@ -354,7 +373,10 @@ socket.on('call', async ({ action, data, user }, reply) => {
       } else if (friendship.status === 'pending') {
         await db.execute('UPDATE friendships SET messages_sent = messages_sent + 1 WHERE friendship_id = ?', [friendship.id]);
       }
-      const msg = { uid: randomUUID(), ...chat, from: user.xid, fromName: user.username, to, text, sentAt: new Date().toISOString() };
+      const msg = {
+        uid: mediaId || randomUUID(), ...chat, from: user.xid, fromName: user.username,
+        to, text: text || '', sentAt: new Date().toISOString(), attachment,
+      };
       const request = friendship.status === 'pending';
       const friendshipMeta = friendshipView(await getFriendship(user.xid, to), user.xid);
       if (onlineUsers.has(to)) {

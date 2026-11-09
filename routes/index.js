@@ -22,5 +22,6 @@ router.use('/auth', require('./auth'));
 // PROTECTED: everything registered below this line needs a valid token
 router.use(authenticate);
 router.use('/messages', require('./messages'));
+router.use('/media', require('./media'));
 
 module.exports = router;

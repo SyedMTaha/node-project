@@ -5,7 +5,7 @@ The portal tasks, planned day by day at 8 h per day, are in "Daily task plan" at
 Order follows the supervisor's priority: Dgram in the login flow first, then message deletion, then the rest.
 Owners: **Developer** = me (implementation, tests); **Supervisor** = decisions.
 
-Capacity: 14 working days × 8 h = **112 h**. Story work is estimated at **82.5 h**, leaving about **29.5 h** for planning, meetings, supervisor reviews and unexpected problems (see the summary at the end).
+Capacity: 14 working days × 8 h = **112 h**. Story work is estimated at **90.5 h**, leaving about **21.5 h** for planning, meetings, supervisor reviews and unexpected problems (see the summary at the end).
 
 Decisions from the supervisor (26 Oct):
 - Dgram in the login flow: signed event datagrams after register / login / logout (no password or token over UDP).
@@ -138,27 +138,28 @@ Decisions from the supervisor (26 Oct):
 
 ---
 
-## Story 4: Images and PDFs in messages, and a profile picture
+## Story 4: Images in messages, and a profile picture
 
-- **Title:** Media messages (image / PDF) and profile picture, deleted after delivery
+- **Title:** Image messages and profile picture, deleted after download
 - **Type:** Technical investigation, then Feature
 - **Priority:** Medium
-- **Requirement:** As a user I can send an image or a PDF in a direct message and set a profile picture. Media has two collections: message media (deleted with the message after delivery) and user media (profile picture, kept). Storage: MySQL if suitable, otherwise Firebase or an AWS bucket; the investigation decides (see "Media storage" below).
+- **Requirement:** As a user I can send a PNG or JPEG image in a direct message and set a profile picture. Message media is stored temporarily in MySQL and deleted after the recipient downloads it; user media keeps the profile picture. Storage: MySQL was selected for this practice project after comparing MySQL BLOB, Firebase Storage and AWS S3.
 - **Tasks:**
 
   | # | Task | Dev | Test |
   |---|---|---|---|
   | 4.1 | Investigation: MySQL BLOB vs Firebase Storage vs AWS S3 (limits, cost, setup); recommendation to the supervisor | 4 | 0 |
   | 4.2 | Media collections: message media and user media (table structure / storage paths) | 2 | 0.5 |
-  | 4.3 | Upload over HTTP (not Socket.IO: its default message limit is 1 MB), type and size checks (PNG/JPEG/PDF, e.g. max 5 MB) | 4 | 1.5 |
-  | 4.4 | Show images / open PDFs in the Messaging page; profile picture on the user | 3 | 1 |
-  | 4.5 | Delete message media together with the message after delivery (through the delete queue) | 3 | 1.5 |
+  | 4.3 | Upload over HTTP (not Socket.IO: its default message limit is 1 MB), type and size checks (PNG/JPEG, max 5 MB) | 4 | 1.5 |
+  | 4.4 | Show images in the Messaging page; profile picture on the user | 3 | 1 |
+  | 4.5 | Delete message media after the recipient downloads it | 3 | 1.5 |
+  | 4.6 | In-app chat image attachment lifecycle: upload, send, download locally, acknowledge download, and remove the server copy | 6 | 2 |
 
 - **Acceptance criteria:**
   - Investigation note compares the options and the supervisor approves one.
-  - A user can attach a PNG, JPEG or PDF up to the size limit; other types and larger files are refused.
-  - The recipient sees the image or can open the PDF.
-  - After delivery and the queue run, the message's media is gone from storage; the profile picture stays.
+  - A user can attach a PNG or JPEG up to the size limit; other types and larger files are refused.
+  - The recipient sees the image, can download it locally, and the server receives a download acknowledgement.
+  - After the confirmed download, the message's media is gone from storage; the profile picture stays.
   - Any storage credentials are only in `.env`, never in code or logs.
 - **Technical impact analysis:**
   - APIs / integrations affected: new upload and download endpoints; `message:direct` carries an attachment reference; possibly an external storage API.
@@ -170,9 +171,9 @@ Decisions from the supervisor (26 Oct):
   - Unknowns / questions: Maximum file size (proposal: 5 MB). Profile picture: visible to every logged-in user (decided).
   - Key risks: large files in MySQL make the database and backups heavy (less so here, because message media is deleted after delivery); cloud free tiers and prices change and must be checked during the investigation.
   - Owners: Developer; Supervisor (storage choice, account).
-- **Estimation & planning:** Dev 16 h · Testing 4.5 h · Unit: Hours · Confidence: Low · Investigation required: Yes
+- **Estimation & planning:** Dev 22 h · Testing 6.5 h · Unit: Hours · Confidence: Medium · Investigation required: Yes
 - **Definition of done:** Storage approved; upload, display and deletion work end to end; limits enforced; tests added; regression passes.
-- **Planning decision:** Needs technical investigation
+- **Planning decision:** Storage investigation complete; implementation and focused verification in progress
 - **Notes / decisions:** If the sprint runs short, the profile picture (part of 4.2–4.4) moves to sprint 30.
 
 ---
@@ -214,7 +215,7 @@ Decisions from the supervisor (26 Oct):
 
 ---
 
-## Media storage: can MySQL store images and PDFs?
+## Media storage: can MySQL store chat images and profile pictures?
 
 Yes. MySQL stores files in BLOB columns (`MEDIUMBLOB` up to 16 MB, `LONGBLOB` up to 4 GB); one request may not exceed `max_allowed_packet` (64 MB by default in MySQL 8).
 
@@ -226,7 +227,7 @@ Yes. MySQL stores files in BLOB columns (`MEDIUMBLOB` up to 16 MB, `LONGBLOB` up
 | Serving files | Every download goes through our server and MySQL | Served by the provider (CDN), direct signed links |
 | Fit for this project | Good for small files that are deleted after delivery; profile pictures are small | The normal choice at scale and for large files |
 
-**Recommendation for this sprint:** MySQL (`MEDIUMBLOB`, max 5 MB per file) behind a small storage module, so it can be switched to Firebase or S3 later without touching the rest. Message media is deleted after delivery, so the database does not keep growing. To be confirmed in task 4.1.
+**Decision for this sprint:** MySQL (`MEDIUMBLOB`, max 5 MB per image) behind a small storage module, so it can be switched to Firebase or S3 later without touching the rest. Message media is deleted after the recipient confirms download, so the database does not keep growing. Only PNG and JPEG images are in scope; PDF support is deferred.
 
 ## Location from IP: offline database or online API?
 
@@ -250,11 +251,11 @@ Yes. MySQL stores files in BLOB columns (`MEDIUMBLOB` up to 16 MB, `LONGBLOB` up
 | 1 Single-device login, Dgram events, location | High | 26 | Ready |
 | 2 No message text kept after delivery | High | 7 | Ready |
 | 3 Message requests, 3-message limit, aliases | High | 20 | Ready |
-| 4 Media messages and profile picture | Medium | 20.5 | Needs investigation |
+| 4 Media messages and profile picture | Medium | 28.5 | Implementation and verification in progress |
 | 5 PM2, failover fix, DEMO.md | Medium | 9 | Ready |
-| **Total** | | **82.5** | |
+| **Total** | | **90.5** | |
 
-82.5 h of estimated story work out of 112 h leaves about 29.5 h for planning, meetings, reviews and the unexpected. Several estimates have Low or Medium confidence, so this margin is needed. If something still runs late, the profile picture (story 4) moves to sprint 30 first.
+90.5 h of estimated story work out of 112 h leaves about 21.5 h for planning, meetings, reviews and the unexpected. Several estimates have Low or Medium confidence, so this margin is needed. If something still runs late, the profile picture (story 4) moves to sprint 30 first.
 
 Suggested order:
 - **Week 1 (26–30 Oct):** Story 1 tasks 1.1–1.4 (Dgram events, single session); Story 2; Story 5 task 5.2 (failover fix).
@@ -364,9 +365,11 @@ Story tasks keep their numbers (1.1 … 5.3). Extra daily tasks (planning, regre
 |---|---|---|---|---| 
 | 3.5 Alias for a friend | 3 | Planned | 4 | Medium |
 | Story 3 integration tests and regression | 3 | Planned | 4 | Medium |
+| 4.6 In-app chat image attachment lifecycle | 4 | Additional change | 8 | High |
 
 - **3.5 (complete early):** Users can set or clear a personal alias for a friend, shown only to themselves. The inline alias editor spacing and focus behavior were fixed; broader private-alias display polish is deferred.
 - **Story 3 tests (complete early):** Focused verification covered the 3-message limit, accept, decline, alias save, and alias clearing. Full regression passed **7 passed, 0 failed, 3 skipped** against the gateway on port 6100.
+- **4.6 (in progress):** Implemented the PNG/JPEG chat attachment flow, local download, download acknowledgement, server-side message-media deletion, and persistent profile-picture storage. Manual verification confirmed the message-media table is empty after download and profile-picture rows remain. Full regression and negative upload/authorization tests are still pending.
 
 ### Day 10: Fri 6 Nov
 
@@ -387,20 +390,20 @@ Story tasks keep their numbers (1.1 … 5.3). Extra daily tasks (planning, regre
 | 4.3 Upload with type and size checks | 4 | Planned | 5.5 | High |
 | 4.4 Show media and profile picture (part 1) | 4 | Planned | 2.5 | Medium |
 
-- **4.3:** Image and PDF upload over HTTP with type and size checks (PNG, JPEG, PDF, max 5 MB).
-- **4.4 (in progress):** Started showing images and PDFs in the Messaging page.
+- **4.3:** PNG and JPEG upload over HTTP with type and size checks, max 5 MB.
+- **4.4 (in progress):** Showing images in the Messaging page and loading the profile picture.
 
 ### Day 12: Tue 10 Nov
 
 | Task | Story | Type | Est. h | Effort |
 |---|---|---|---|---|
 | 4.4 Show media and profile picture (part 2) | 4 | Planned | 1.5 | Medium |
-| 4.5 Delete message media after delivery | 4 | Planned | 4.5 | High |
+| 4.5 Delete message media after confirmed download | 4 | Planned | 4.5 | High |
 | Story 4 tests and regression | 4 | Planned | 2 | Medium |
 
-- **4.4:** Finished media display and the profile picture visible to all logged-in users.
-- **4.5:** Message media is deleted with the message after delivery through the delete queue; profile pictures are kept.
-- **Story 4 tests:** Added an attachment test; full regression.
+- **4.4:** Finish media display and profile-picture visibility for all logged-in users.
+- **4.5:** Delete message media after confirmed download; profile pictures are kept.
+- **Story 4 tests:** Add an attachment test and run the full regression.
 
 ### Day 13: Wed 11 Nov
 

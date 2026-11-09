@@ -32,10 +32,10 @@ Old variables linger in a terminal. If behaviour looks odd, open a fresh termina
 | `$env:RATE_LIMIT_DISABLED='true'; npm run cluster` | turns off register/login rate limits for tests **[verified]** |
 
 ->
-|`$env:UDP_HEARTBEAT='true';$env:RATE_LIMIT_DISABLED='true'; $env:AUTH_EVENTS='true' ; npm run cluster ` | starts 3 instances on 3001-3003 with UDP |
-| `$env:UDP_HEARTBEAT='true'; $env:HARD_LIMIT='false';$env:QUEUE_MAX='0'; npm run lb`| starts load balancer |
-| ` $env:SG_PORT='6100'; $env:AUTH_EVENTS= 'true' ; node gateway/socket-gateway.js` | starts socket gateway |
-| `$env:GATEWAY_URL='http://localhost:6100'; $env:PENDING_MAX_S='30'; $env:MOVER_INTERVAL_S='5'; node microservices/message-service/index.js`| starts msg service |
+|` $env:UDP_HEARTBEAT='true';$env:RATE_LIMIT_DISABLED='true'; $env:AUTH_EVENTS='true' ; npm run cluster ` | starts 3 instances on 3001-3003 with UDP |
+| ` $env:UDP_HEARTBEAT='true'; $env:HARD_LIMIT='false';$env:QUEUE_MAX='0'; $env:TRUST_UPSTREAM_PROXY='true' ; npm run lb `| starts load balancer |
+| ` $env:SG_PORT='6100'; $env:AUTH_EVENTS= 'true' ; node gateway/socket-gateway.js ` | starts socket gateway |
+| ` $env:GATEWAY_URL='http://localhost:6100'; $env:PENDING_MAX_S='30'; $env:MOVER_INTERVAL_S='5'; node microservices/message-service/index.js `| starts msg service |
 
 
 
