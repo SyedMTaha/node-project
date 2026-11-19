@@ -75,26 +75,43 @@ websocket/index.js - Handles WebSocket connections and messages
 - 54. MySQL MediumBLOB (Binary large object)
 - 55. Mime type (String value for BLOB)
 - 56. PM2 (Process Manager for node.js)
-- 57. 
-- 58.  
- 
+- 57. UDID (Unique device identifier)
+- 58. Stored Procedures in MySql 
+- 59. Collation in stored procedures
+- 60. Find in whole directory CTRL + SHIFT + F
+- 61. Go to line CTRL + P + : + line number 
+- 62. Code commit check
+- 63. 
 
 
 
 
-- Sprint 28:
+
+- Sprint 28: (5-22 OCT)
 - Load Balancer implementation.
 - Multiple Sockets interconnections.
 - Dgram implementation.
 - Sticky Sessions.  
 
 
-- Sprint 29:
+- Sprint 29: (26 OCT - 12 Nov)
 - Hashing.
 - Access denied across multiple devices
 - Alias
 - 1-1 chatting
 - IP checking
 - AWS Bucket
-- 
+- PM2
+- Cache (Redis) implementation
+- Messages and Media deletion from server preserved only on local storage
+- User location fetching through IP
+- User conversation storage
+
+
+Sprint 30: (16 NOV - 3 DEC)
+- Xpal Sphere Transporter Issues
+- Multiple device login issue
+- Join via group link issue
+- Fetching friend list issue
+- App notification issue
 - 
